@@ -1,0 +1,32 @@
+# 环境变量（包含 API Key 等敏感信息）
+.env
+
+# 会话记忆文件（含对话历史，不提交到版本控制）
+sessions.json
+sessions.json.tmp
+
+# FAISS 向量记忆索引（持久化数据，不提交）
+memory/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -18,9 +18,9 @@ FROM python:3.12-slim AS python-builder
 
 WORKDIR /app
 
-# 安装系统依赖（easyocr 需要 libgl1）
+# 安装系统依赖（easyocr/opencv 需要 OpenGL 运行库）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,7 +37,7 @@ WORKDIR /app
 
 # 系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 

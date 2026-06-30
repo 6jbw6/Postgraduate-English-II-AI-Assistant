@@ -23,6 +23,7 @@ import json
 import base64
 import datetime
 import logging
+import asyncio
 from pathlib import Path
 from typing import Annotated
 
@@ -52,6 +53,7 @@ logger = logging.getLogger("uvicorn")
 
 _ocr_reader = None
 HAS_OCR = False
+_ocr_semaphore = asyncio.Semaphore(settings.ocr_max_concurrency)
 
 
 def _init_ocr():
@@ -179,8 +181,8 @@ except ImportError:
 # 图片 OCR 工具函数
 # ============================================================
 
-def ocr_image(b64_data: str) -> str:
-    """识别单张 Base64 图片中的英文文字；OCR 不可用时返回空字符串。"""
+def _ocr_image_sync(b64_data: str) -> str:
+    """同步 OCR 实现，供线程池调用。"""
     if not HAS_OCR or _ocr_reader is None:
         return ""
     try:
@@ -192,6 +194,12 @@ def ocr_image(b64_data: str) -> str:
     except Exception as e:
         logger.warning("OCR 识别失败：%s", e)
         return ""
+
+
+async def ocr_image(b64_data: str) -> str:
+    """识别单张 Base64 图片；用线程池隔离 CPU/IO 阻塞并限制并发。"""
+    async with _ocr_semaphore:
+        return await asyncio.to_thread(_ocr_image_sync, b64_data)
 
 
 def _reformat_quiz_options(text: str) -> str:
@@ -365,7 +373,7 @@ async def _update_current_user_profile(
     avatar_url = updates.get("avatar_url")
     if isinstance(avatar_url, str) and avatar_url.startswith("data:image/"):
         content, mime_type = decode_data_url(avatar_url)
-        stored = storage.save_bytes(content, mime_type, prefix=f"avatars/{current_user.id}")
+        stored = await storage.save_bytes_async(content, mime_type, prefix=f"avatars/{current_user.id}")
         updates["avatar_url"] = stored.url
 
     for key, value in updates.items():
@@ -555,8 +563,8 @@ async def chat(
 
     if request.images:
         all_texts = []
-        for i, b64 in enumerate(request.images):
-            text = ocr_image(b64)
+        ocr_results = await asyncio.gather(*(ocr_image(b64) for b64 in request.images))
+        for i, text in enumerate(ocr_results):
             if text:
                 text = _reformat_quiz_options(text)
                 all_texts.append(f"[图{i + 1}]\n{text}")
@@ -588,11 +596,12 @@ async def chat(
     msg_stmt = (
         select(Message)
         .where(Message.session_id == session_id)
-        .order_by(Message.created_at.asc())
+        .order_by(Message.created_at.desc())
+        .limit(settings.chat_history_messages_limit)
     )
     msg_result = await db.execute(msg_stmt)
     db_messages = msg_result.scalars().all()
-    history = [{"role": m.role, "content": m.content} for m in db_messages]
+    history = [{"role": m.role, "content": m.content} for m in reversed(db_messages)]
 
     # ----- 4. 保存用户消息到数据库 -----
     user_msg = Message(session_id=session_id, role="user", content=user_message or "(图片消息)")
@@ -606,6 +615,9 @@ async def chat(
 
     logger.info("对话请求：user=%d, session=%s, question_type=%s, msg_len=%d",
                 current_user.id, session_id, question_type, len(llm_message))
+
+    # SSE 连接可能持续很久；进入流式阶段前释放认证/预处理用的数据库连接。
+    await db.close()
 
     # ----- 5. 流式生成 -----
     async def generate():

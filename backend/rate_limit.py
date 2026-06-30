@@ -18,7 +18,7 @@ from typing import Callable
 
 from fastapi import Request, HTTPException, status
 try:
-    from redis import Redis
+    from redis.asyncio import Redis
     from redis.exceptions import RedisError
 except ImportError:
     Redis = None
@@ -68,11 +68,18 @@ class SlidingWindowLimiter:
 # 全局实例
 _limiter = SlidingWindowLimiter()
 _redis_client: Redis | None = None
+_redis_ready = False
 
 if settings.redis_url and Redis is not None:
     try:
-        _redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
-        _redis_client.ping()
+        _redis_client = Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_timeout=settings.redis_socket_timeout_seconds,
+            socket_connect_timeout=settings.redis_socket_timeout_seconds,
+            max_connections=settings.redis_max_connections,
+        )
+        _redis_ready = True
         logger.info("Redis 限流已启用")
     except RedisError as exc:
         logger.warning("Redis 不可用，限流降级为内存模式：%s", exc)
@@ -81,9 +88,9 @@ elif settings.redis_url:
     logger.warning("已配置 REDIS_URL，但未安装 redis 依赖，限流降级为内存模式")
 
 
-def _redis_is_allowed(key: str, max_requests: int, window_seconds: float) -> bool | None:
+async def _redis_is_allowed(key: str, max_requests: int, window_seconds: float) -> bool | None:
     """使用 Redis sorted set 实现跨进程滑窗限流；返回 None 表示降级。"""
-    if _redis_client is None:
+    if _redis_client is None or not _redis_ready:
         return None
     now = time.time()
     redis_key = f"rate:{key}"
@@ -91,9 +98,9 @@ def _redis_is_allowed(key: str, max_requests: int, window_seconds: float) -> boo
         pipe = _redis_client.pipeline()
         pipe.zremrangebyscore(redis_key, 0, now - window_seconds)
         pipe.zcard(redis_key)
-        pipe.zadd(redis_key, {str(now): now})
+        pipe.zadd(redis_key, {f"{now}:{threading.get_ident()}": now})
         pipe.expire(redis_key, int(window_seconds) + 1)
-        _, count, _, _ = pipe.execute()
+        _, count, _, _ = await pipe.execute()
         return int(count) < max_requests
     except RedisError as exc:
         logger.warning("Redis 限流失败，降级为内存模式：%s", exc)
@@ -121,7 +128,7 @@ def RateLimit(max_requests: int, window_seconds: float = 60.0, key_fn: Callable[
             ip = (forwarded or "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
             key = f"{request.url.path}:{ip}"
 
-        allowed = _redis_is_allowed(key, max_requests, window_seconds)
+        allowed = await _redis_is_allowed(key, max_requests, window_seconds)
         if allowed is None:
             allowed = _limiter.is_allowed(key, max_requests, window_seconds)
 

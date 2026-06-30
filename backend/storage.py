@@ -11,6 +11,7 @@ import base64
 import binascii
 import mimetypes
 import uuid
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,10 @@ class ObjectStorage:
         if self.backend == "s3":
             return self._save_s3(key, content, mime_type)
         return self._save_local(key, content)
+
+    async def save_bytes_async(self, content: bytes, mime_type: str, prefix: str = "uploads") -> StoredObject:
+        """异步保存对象，内部用线程池隔离文件系统/S3 阻塞调用。"""
+        return await asyncio.to_thread(self.save_bytes, content, mime_type, prefix)
 
     def _save_local(self, key: str, content: bytes) -> StoredObject:
         target = settings.storage_local_dir / key

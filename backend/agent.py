@@ -215,6 +215,7 @@ class EnglishAgent:
         self._mem_dir.mkdir(parents=True, exist_ok=True)
 
         self._memories: dict[str, VectorMemory] = {}
+        self._chat_semaphore = asyncio.Semaphore(settings.llm_max_concurrency)
 
     def _get_memory(self, session_id: str) -> VectorMemory:
         """获取或创建会话的向量记忆实例"""
@@ -309,34 +310,35 @@ class EnglishAgent:
 
         # ----- 流式调用 LLM -----
         try:
-            stream = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                stream=True,
-                temperature=0.7,
-                max_tokens=4096,
-            )
+            async with self._chat_semaphore:
+                stream = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    stream=True,
+                    temperature=0.7,
+                    max_tokens=4096,
+                )
 
-            full_response = ""
-            thinking_active = False
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta:
-                    delta = chunk.choices[0].delta
+                full_response = ""
+                thinking_active = False
+                async for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta:
+                        delta = chunk.choices[0].delta
 
-                    reasoning = getattr(delta, "reasoning_content", None) or ""
-                    if reasoning:
-                        if not thinking_active:
-                            thinking_active = True
-                            yield f"data: {json.dumps({'thinking': True, 'content': '思考中...', 'done': False})}\n\n"
-                        continue
+                        reasoning = getattr(delta, "reasoning_content", None) or ""
+                        if reasoning:
+                            if not thinking_active:
+                                thinking_active = True
+                                yield f"data: {json.dumps({'thinking': True, 'content': '思考中...', 'done': False})}\n\n"
+                            continue
 
-                    content = delta.content or ""
-                    if content:
-                        if thinking_active:
-                            thinking_active = False
-                            yield f"data: {json.dumps({'thinking': False, 'content': '', 'done': False})}\n\n"
-                        full_response += content
-                        yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                        content = delta.content or ""
+                        if content:
+                            if thinking_active:
+                                thinking_active = False
+                                yield f"data: {json.dumps({'thinking': False, 'content': '', 'done': False})}\n\n"
+                            full_response += content
+                            yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
 
             # 后台异步：向量记忆 + 摘要，不阻塞 SSE 响应收尾。
             asyncio.create_task(memory.add_exchange(message, full_response))

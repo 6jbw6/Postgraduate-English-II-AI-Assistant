@@ -208,6 +208,23 @@ alembic revision --autogenerate -m "change description"
 
 配置 `REDIS_URL` 后，限流从进程内存升级为 Redis 滑窗限流，支持多实例部署；题型列表等低频数据也会走 Redis 缓存。Redis 不可用时会自动降级到内存限流和空缓存。
 
+### 高并发部署
+
+建议生产环境至少做这些配置：
+
+- `WEB_CONCURRENCY=2` 或更高，按 CPU 核数调整 Uvicorn worker 数
+- `REDIS_URL=redis://...`，让限流和缓存跨进程生效
+- `LLM_MAX_CONCURRENCY`，限制单个 worker 同时进行的流式 AI 请求，保护上游模型服务和本机内存
+- `CHAT_HISTORY_MESSAGES_LIMIT`，控制每次对话加载的最近消息数，避免长会话拖慢查询和上下文构建
+- `REDIS_MAX_CONNECTIONS`，限制缓存/限流占用的 Redis 连接数
+- `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT_SECONDS`，调大数据库连接池
+- SQLite 单机部署可设置 `SQLITE_BUSY_TIMEOUT_SECONDS` 缓解短时写锁冲突；高并发生产环境建议切换 PostgreSQL
+- `OCR_MAX_CONCURRENCY`，限制 OCR 同时处理的图片数，避免 CPU 被打满
+- 使用 PostgreSQL / MySQL + Alembic 迁移，不要依赖启动时自动建表
+- 对象存储使用 S3/MinIO，避免大文件长期落数据库或本地磁盘
+
+如果是容器编排，多副本应用建议前面挂负载均衡，后面统一接 Redis、数据库和对象存储。
+
 ### 对象存储
 
 头像上传不再长期保存 Base64 到数据库。后端会将 Data URL 解码后写入对象存储，并在用户资料中保存 URL。

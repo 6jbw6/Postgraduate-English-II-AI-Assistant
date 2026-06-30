@@ -60,6 +60,17 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    """解析浮点环境变量；非法输入回退默认值。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 _load_dotenv()
 
 
@@ -82,6 +93,11 @@ class Settings(BaseModel):
             f"sqlite+aiosqlite:///{DATA_DIR / 'app.db'}",
         )
     )
+    db_pool_size: int = Field(default_factory=lambda: _int("DB_POOL_SIZE", 10), ge=1)
+    db_max_overflow: int = Field(default_factory=lambda: _int("DB_MAX_OVERFLOW", 20), ge=0)
+    db_pool_timeout_seconds: int = Field(default_factory=lambda: _int("DB_POOL_TIMEOUT_SECONDS", 30), ge=1)
+    db_pool_recycle_seconds: int = Field(default_factory=lambda: _int("DB_POOL_RECYCLE_SECONDS", 1800), ge=1)
+    sqlite_busy_timeout_seconds: int = Field(default_factory=lambda: _int("SQLITE_BUSY_TIMEOUT_SECONDS", 30), ge=1)
 
     jwt_secret_key: str = Field(
         default_factory=lambda: os.getenv(
@@ -117,11 +133,17 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     )
     openai_timeout_seconds: float = Field(
-        default_factory=lambda: float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120")),
+        default_factory=lambda: _float("OPENAI_TIMEOUT_SECONDS", 120.0),
         gt=0,
+    )
+    llm_max_concurrency: int = Field(default_factory=lambda: _int("LLM_MAX_CONCURRENCY", 8), ge=1)
+    chat_history_messages_limit: int = Field(
+        default_factory=lambda: _int("CHAT_HISTORY_MESSAGES_LIMIT", 20),
+        ge=2,
     )
 
     ocr_enabled: bool = Field(default_factory=lambda: _bool("OCR_ENABLED", True))
+    ocr_max_concurrency: int = Field(default_factory=lambda: _int("OCR_MAX_CONCURRENCY", 2), ge=1)
     memory_dir: Path = Field(default_factory=lambda: Path(os.getenv("MEMORY_DIR", str(MEMORY_DIR))))
     max_images_per_request: int = Field(default_factory=lambda: _int("MAX_IMAGES_PER_REQUEST", 9), ge=0, le=20)
     max_image_bytes: int = Field(default_factory=lambda: _int("MAX_IMAGE_BYTES", 8 * 1024 * 1024), ge=1024)
@@ -141,6 +163,11 @@ class Settings(BaseModel):
     )
 
     redis_url: str = Field(default_factory=lambda: os.getenv("REDIS_URL", ""))
+    redis_socket_timeout_seconds: float = Field(
+        default_factory=lambda: _float("REDIS_SOCKET_TIMEOUT_SECONDS", 1.0),
+        gt=0,
+    )
+    redis_max_connections: int = Field(default_factory=lambda: _int("REDIS_MAX_CONNECTIONS", 50), ge=1)
     cache_default_ttl_seconds: int = Field(
         default_factory=lambda: _int("CACHE_DEFAULT_TTL_SECONDS", 300),
         ge=1,

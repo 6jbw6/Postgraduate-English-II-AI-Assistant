@@ -35,22 +35,46 @@ DATABASE_URL = settings.database_url
 # 同步 URL（用于创建表等操作）
 SYNC_DATABASE_URL = settings.sync_database_url
 
+_ASYNC_ENGINE_OPTIONS = {"echo": False, "future": True}
+_SYNC_ENGINE_OPTIONS = {"echo": False}
+
+if not DATABASE_URL.startswith("sqlite"):
+    _ASYNC_ENGINE_OPTIONS.update({
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_timeout": settings.db_pool_timeout_seconds,
+        "pool_recycle": settings.db_pool_recycle_seconds,
+        "pool_pre_ping": True,
+    })
+
+if not SYNC_DATABASE_URL.startswith("sqlite"):
+    _SYNC_ENGINE_OPTIONS.update({
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_timeout": settings.db_pool_timeout_seconds,
+        "pool_recycle": settings.db_pool_recycle_seconds,
+        "pool_pre_ping": True,
+    })
+
 # 异步引擎
-engine = create_async_engine(DATABASE_URL, echo=False, future=True)
+engine = create_async_engine(DATABASE_URL, **_ASYNC_ENGINE_OPTIONS)
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # 同步引擎（仅用于 create_all）
-sync_engine = create_engine(SYNC_DATABASE_URL, echo=False)
+sync_engine = create_engine(SYNC_DATABASE_URL, **_SYNC_ENGINE_OPTIONS)
 
 
 def _enable_sqlite_wal(dbapi_connection, connection_record):
-    """启用 SQLite WAL 模式，提升并发写入性能"""
+    """启用 SQLite WAL 和忙等待，提升单机并发写入稳定性。"""
     import sqlite3
     if isinstance(dbapi_connection, sqlite3.Connection):
         dbapi_connection.execute("PRAGMA journal_mode=WAL")
+        dbapi_connection.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_seconds * 1000}")
+        dbapi_connection.execute("PRAGMA synchronous=NORMAL")
 
 
 event.listen(sync_engine, "connect", _enable_sqlite_wal)
+event.listen(engine.sync_engine, "connect", _enable_sqlite_wal)
 
 
 # ============================================================

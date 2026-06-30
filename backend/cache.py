@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 try:
-    from redis import Redis
+    from redis.asyncio import Redis
     from redis.exceptions import RedisError
 except ImportError:
     Redis = None
@@ -31,8 +31,13 @@ _redis: Redis | None = None
 
 if settings.redis_url and Redis is not None:
     try:
-        _redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        _redis.ping()
+        _redis = Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_timeout=settings.redis_socket_timeout_seconds,
+            socket_connect_timeout=settings.redis_socket_timeout_seconds,
+            max_connections=settings.redis_max_connections,
+        )
         logger.info("Redis 缓存已启用")
     except RedisError as exc:
         logger.warning("Redis 缓存不可用，降级为空缓存：%s", exc)
@@ -51,7 +56,7 @@ async def cache_get(namespace: str, key: str) -> Any | None:
     if _redis is None:
         return None
     try:
-        raw = _redis.get(make_cache_key(namespace, key))
+        raw = await _redis.get(make_cache_key(namespace, key))
         return json.loads(raw) if raw else None
     except (RedisError, json.JSONDecodeError) as exc:
         logger.warning("读取缓存失败：%s", exc)
@@ -64,7 +69,7 @@ async def cache_set(namespace: str, key: str, value: Any, ttl_seconds: int | Non
         return
     ttl = ttl_seconds or settings.cache_default_ttl_seconds
     try:
-        _redis.setex(make_cache_key(namespace, key), ttl, json.dumps(value, ensure_ascii=False))
+        await _redis.setex(make_cache_key(namespace, key), ttl, json.dumps(value, ensure_ascii=False))
     except (RedisError, TypeError) as exc:
         logger.warning("写入缓存失败：%s", exc)
 
@@ -74,6 +79,6 @@ async def cache_delete(namespace: str, key: str) -> None:
     if _redis is None:
         return
     try:
-        _redis.delete(make_cache_key(namespace, key))
+        await _redis.delete(make_cache_key(namespace, key))
     except RedisError as exc:
         logger.warning("删除缓存失败：%s", exc)

@@ -5,6 +5,7 @@ import { marked } from 'marked'
  */
 export function renderMarkdown(content) {
   if (!content) return ''
+  // breaks=true 让模型输出中的普通换行按用户预期展示。
   return marked.parse(content, {
     gfm: true,
     breaks: true,

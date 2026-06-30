@@ -5,8 +5,7 @@
 1. 管理 LLM 客户端（OpenAI 兼容 API）
 2. 构建对话上下文（系统提示词 + 混合记忆检索）
 3. 流式调用 LLM 并实时返回响应
-4. 管理多用户会话（创建、查询、清除）
-5. 持久化存储：JSON 文件 + FAISS 向量索引
+4. 管理向量记忆（FAISS 语义检索 + LLM 摘要）
 
 记忆系统架构（先进混合检索）：
 ┌─────────────────────────────────────────────┐
@@ -19,11 +18,7 @@
 │  current    ← 用户当前消息                     │
 └─────────────────────────────────────────────┘
 
-依赖：
-- openai >= 1.0（异步客户端 + Embedding API）
-- faiss-cpu（Facebook 向量相似度搜索引擎）
-- numpy（向量运算）
-- prompts 模块（题型提示词映射）
+会话持久化由 main.py 通过数据库管理，本模块只负责 LLM 调用 + 向量记忆。
 """
 
 import os
@@ -40,8 +35,10 @@ from openai import AsyncOpenAI
 
 try:
     from .prompts import QUESTION_TYPE_PROMPTS, BASE_SYSTEM_PROMPT
+    from .config import settings
 except ImportError:
     from prompts import QUESTION_TYPE_PROMPTS, BASE_SYSTEM_PROMPT
+    from config import settings
 
 # ============================================================
 # 配置常量
@@ -65,12 +62,6 @@ class VectorMemory:
     - 根据当前查询语义检索最相关的历史对话
     - 定期生成对话摘要，压缩旧历史
     - 持久化到磁盘（重启后恢复记忆）
-
-    工作原理：
-    1. 每轮对话结束后，将 (user_msg, ai_msg) 拼接 → embedding → 写入 FAISS
-    2. 下一轮对话时，取当前 user_msg → embedding → FAISS.search() → Top-K 相关历史
-    3. 每 N 轮触发 LLM 摘要：将全部对话压缩为一段摘要文本
-    4. 索引和摘要保存为 .faiss 和 .faiss_meta 文件
     """
 
     def __init__(self, client: AsyncOpenAI, model: str, sid: str, data_dir: Path):
@@ -80,18 +71,13 @@ class VectorMemory:
         self._data_dir = data_dir
         self._lock = threading.Lock()
 
-        # FAISS 内积索引（向量归一化后等价于余弦相似度）
         self._index = faiss.IndexFlatIP(EMBEDDING_DIM)
-        self._texts: list[dict] = []      # 与 index 行对应的消息对
-        self._summary: str = ""           # 定期压缩的对话摘要
-        self._round_count = 0             # 对话轮数计数器
+        self._texts: list[dict] = []
+        self._summary: str = ""
+        self._round_count = 0
 
-        # 启动时恢复持久化数据
         self._load()
 
-    # ----------------------------------------------------------
-    # 索引文件路径
-    # ----------------------------------------------------------
     @property
     def _index_path(self) -> Path:
         return self._data_dir / f"mem_{self._sid}.faiss"
@@ -100,11 +86,8 @@ class VectorMemory:
     def _meta_path(self) -> Path:
         return self._data_dir / f"mem_{self._sid}.faiss_meta"
 
-    # ----------------------------------------------------------
-    # 持久化
-    # ----------------------------------------------------------
     def _load(self):
-        """从磁盘恢复 FAISS 索引和元数据"""
+        """从磁盘恢复 FAISS 索引和配套元数据；失败时降级为空记忆。"""
         if not self._index_path.exists():
             return
         try:
@@ -118,7 +101,7 @@ class VectorMemory:
             pass
 
     def _save(self):
-        """将 FAISS 索引和元数据写入磁盘（异步线程）"""
+        """异步落盘，避免每次对话结束时阻塞主请求链路。"""
         def _write():
             with self._lock:
                 try:
@@ -134,15 +117,8 @@ class VectorMemory:
                     pass
         threading.Thread(target=_write, daemon=True).start()
 
-    # ----------------------------------------------------------
-    # 核心 API
-    # ----------------------------------------------------------
-
     async def embed(self, text: str) -> np.ndarray | None:
-        """调用 Embedding API 将文本转为向量（已归一化）
-
-        如果 API 不支持 embedding（如 DeepSeek），返回 None，上层调用者会优雅降级。
-        """
+        """生成归一化向量；归一化后内积搜索等价于余弦相似度搜索。"""
         try:
             resp = await self._client.embeddings.create(
                 model=self._model,
@@ -157,18 +133,18 @@ class VectorMemory:
             return None
 
     async def add_exchange(self, user_msg: str, ai_msg: str):
-        """将一轮对话存入向量索引（embedding 不可用时跳过）"""
+        """把一轮完整问答加入长期语义记忆。"""
         text = f"用户：{user_msg}\n助手：{ai_msg}"
         vec = await self.embed(text)
         if vec is None:
-            return  # embedding 不可用，跳过向量存储
+            return
         self._index.add(vec.reshape(1, -1))
         self._texts.append({"role": "user", "content": user_msg, "ai": ai_msg})
         self._round_count += 1
         self._save()
 
     async def retrieve(self, query: str, k: int = RETRIEVAL_TOP_K) -> list[dict]:
-        """语义检索与当前查询最相关的历史对话（embedding 不可用时返回空）"""
+        """按语义相似度召回与当前问题最相关的历史片段。"""
         if self._index.ntotal == 0:
             return []
         k = min(k, self._index.ntotal)
@@ -183,15 +159,14 @@ class VectorMemory:
         return results
 
     async def maybe_summarize(self):
-        """每隔 SUMMARY_INTERVAL 轮，用 LLM 压缩全部历史为摘要"""
+        """每隔固定轮次压缩近期对话，降低后续上下文长度。"""
         if self._round_count == 0 or self._round_count % SUMMARY_INTERVAL != 0:
             return
         if not self._texts:
             return
 
-        # 构建摘要提示词
         history_text = ""
-        for t in self._texts[-30:]:  # 只取最近 30 条做摘要输入
+        for t in self._texts[-30:]:
             history_text += f"用户：{t['content'][:200]}\n助手：{t.get('ai', '')[:200]}\n"
 
         prompt = (
@@ -209,20 +184,11 @@ class VectorMemory:
             self._summary = resp.choices[0].message.content.strip()
             self._save()
         except Exception:
-            pass  # 摘要失败不影响主流程
+            pass
 
     @property
     def summary(self) -> str:
         return self._summary
-
-    @property
-    def history(self) -> list[dict]:
-        """返回原始消息列表（供 _fallback_title 等使用）"""
-        result = []
-        for t in self._texts:
-            result.append({"role": "user", "content": t["content"]})
-            result.append({"role": "assistant", "content": t.get("ai", "")})
-        return result
 
 
 # ============================================================
@@ -232,91 +198,23 @@ class VectorMemory:
 class EnglishAgent:
     """考研英语二学习助手 AI Agent
 
-    会话管理：
-    - 存储结构 {session_id: {"title": "...", "messages": [...]}}
-    - title 由 LLM 根据首轮对话内容自动生成（15 字以内）
-    - 每次对话自动保存到 JSON 文件
-
-    记忆系统（混合检索）：
-    - 近期窗口：始终保留最近 RECENT_WINDOW 轮
-    - 语义检索：通过 FAISS 余弦相似度检索 Top-K 相关历史
-    - 摘要压缩：定期用 LLM 压缩旧对话为摘要
-    - 持久化：FAISS 索引 + pickle 元数据，重启恢复
-
-    LLM 调用：
-    - 使用 OpenAI 兼容 API（支持 DeepSeek、OpenAI 等）
-    - 流式输出（Streaming），逐 chunk 返回给前端
-    - temperature=0.7，max_tokens=4096
+    会话管理由外部（main.py + 数据库）负责。
+    本类只负责 LLM 上下文构建 + 流式调用 + 向量记忆。
     """
 
     def __init__(self):
         self.client = AsyncOpenAI(
-            api_key=os.getenv("OPENAI_API_KEY", "sk-your-api-key"),
-            base_url=os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1"),
-            timeout=120.0,
+            api_key=settings.openai_api_key or "sk-your-api-key",
+            base_url=settings.openai_base_url,
+            timeout=settings.openai_timeout_seconds,
         )
-        self.model = os.getenv("OPENAI_MODEL", "deepseek-chat")
-        self.embedding_model = os.getenv(
-            "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
-        )
+        self.model = settings.openai_model
+        self.embedding_model = settings.openai_embedding_model
 
-        # 持久化路径
-        self._data_file = Path(__file__).resolve().parent.parent / "sessions.json"
-        self._mem_dir = Path(__file__).resolve().parent.parent / "memory"
+        self._mem_dir = settings.memory_dir
         self._mem_dir.mkdir(parents=True, exist_ok=True)
-        self._save_lock = threading.Lock()
 
-        # 会话存储
-        self.sessions: dict[str, dict] = {}
-
-        # 向量记忆字典（每个 session 一个 VectorMemory）
         self._memories: dict[str, VectorMemory] = {}
-
-        # 启动时恢复
-        self._load_sessions()
-
-    # ------------------------------------------------------------
-    # 持久化
-    # ------------------------------------------------------------
-
-    def _load_sessions(self):
-        """从 sessions.json 恢复历史会话（支持新旧格式自动迁移）"""
-        if not self._data_file.exists():
-            return
-        try:
-            with open(self._data_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                return
-            for sid, val in data.items():
-                if isinstance(val, list):
-                    title = self._fallback_title(val)
-                    self.sessions[sid] = {"title": title, "messages": val}
-                elif isinstance(val, dict) and "messages" in val:
-                    self.sessions[sid] = val
-        except (json.JSONDecodeError, OSError):
-            pass
-
-        # 为每个已恢复的 session 初始化 VectorMemory
-        for sid in self.sessions:
-            self._get_memory(sid)
-
-    def _save_sessions(self):
-        """异步线程保存 sessions.json（原子写入）"""
-        def _write():
-            with self._save_lock:
-                try:
-                    tmp = self._data_file.with_suffix(".tmp")
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump(self.sessions, f, ensure_ascii=False, indent=2)
-                    tmp.replace(self._data_file)
-                except OSError:
-                    pass
-        threading.Thread(target=_write, daemon=True).start()
-
-    # ------------------------------------------------------------
-    # 会话管理
-    # ------------------------------------------------------------
 
     def _get_memory(self, session_id: str) -> VectorMemory:
         """获取或创建会话的向量记忆实例"""
@@ -329,53 +227,28 @@ class EnglishAgent:
             )
         return self._memories[session_id]
 
-    def _get_session(self, session_id: str) -> list[dict]:
-        """获取或创建会话的消息列表"""
-        if session_id not in self.sessions:
-            self.sessions[session_id] = {"title": "新对话", "messages": []}
-        return self.sessions[session_id]["messages"]
-
-    def clear_session(self, session_id: str):
-        """清除指定会话（JSON + FAISS 索引）"""
-        if session_id in self.sessions:
-            del self.sessions[session_id]
+    def clear_memory(self, session_id: str):
+        """清除某会话的向量记忆"""
         if session_id in self._memories:
             mem = self._memories.pop(session_id)
-            # 删除磁盘上的 FAISS 文件
             try:
                 mem._index_path.unlink(missing_ok=True)
                 mem._meta_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        self._save_sessions()
-
-    def get_session_history(self, session_id: str) -> list[dict]:
-        """返回指定会话的完整消息历史"""
-        return self._get_session(session_id)
-
-    # ------------------------------------------------------------
-    # 标题生成
-    # ------------------------------------------------------------
-
-    @staticmethod
-    def _fallback_title(messages: list[dict]) -> str:
-        """取首条用户消息作为标题（截取前 30 字）"""
-        for m in messages:
-            if m.get("role") == "user":
-                content = m["content"]
-                return content[:30] + ("..." if len(content) > 30 else "")
-        return "新对话"
 
     # ------------------------------------------------------------
     # 系统提示词
     # ------------------------------------------------------------
 
     def _build_system_prompt(self, question_type: str | None) -> str:
+        """根据题型选择专用提示词；没有题型时使用通用助手提示词。"""
         if question_type and question_type in QUESTION_TYPE_PROMPTS:
             return QUESTION_TYPE_PROMPTS[question_type]["prompt"]
         return BASE_SYSTEM_PROMPT
 
     def get_question_types(self) -> list[dict]:
+        """返回前端题型菜单需要的元数据。"""
         return [
             {"id": key, "name": val["name"], "icon": val["icon"],
              "description": val["description"]}
@@ -383,37 +256,40 @@ class EnglishAgent:
         ]
 
     # ------------------------------------------------------------
-    # 核心对话逻辑（混合记忆检索）
+    # 核心对话逻辑
     # ------------------------------------------------------------
 
     async def chat(
         self,
         session_id: str,
         message: str,
+        history: list[dict] | None = None,
         question_type: str | None = None,
-        display_message: str = "",
     ) -> AsyncGenerator[str, None]:
         """执行一次对话并流式返回 AI 回复
 
         Args:
+            session_id: 会话 ID
             message: 发送给 LLM 的消息（可能含 OCR 文本等增强内容）
-            display_message: 展示/存储在会话历史中的原始消息（无 OCR 文本干扰）
+            history: 来自数据库的消息历史 [{"role": "user/assistant", "content": "..."}, ...]
+            question_type: 题型标识
         """
-        session = self._get_session(session_id)
         memory = self._get_memory(session_id)
         system_prompt = self._build_system_prompt(question_type)
+        history = history or []
 
         # ----- 构建混合上下文 -----
+        # 顺序很重要：系统提示词先定角色，其次补摘要和语义召回，最后放近期上下文与当前问题。
         messages = [{"role": "system", "content": system_prompt}]
 
-        # 1. 摘要（长期记忆压缩）
+        # 1. 摘要：提供长期背景，体积小但信息密度高。
         if memory.summary:
             messages.append({
                 "role": "system",
                 "content": f"[历史对话摘要] {memory.summary}",
             })
 
-        # 2. 语义检索结果（相关历史）
+        # 2. 语义检索：补充和当前问题最相关的历史细节。
         retrieved = await memory.retrieve(message)
         if retrieved:
             messages.append({
@@ -424,22 +300,12 @@ class EnglishAgent:
                 messages.append({"role": "user", "content": r["content"]})
                 messages.append({"role": "assistant", "content": r.get("ai", "")})
 
-        # 3. 近期窗口（时间局部性）
-        recent = session[-(RECENT_WINDOW * 2):]  # *2 因为 user+assistant 成对
+        # 3. 近期窗口：保留最近几轮原文，保证短期连续性。
+        recent = history[-(RECENT_WINDOW * 2):]
         messages.extend(recent)
 
-        # 4. 当前消息
+        # 4. 当前消息：必须放在最后，确保模型把它当作本轮任务。
         messages.append({"role": "user", "content": message})
-
-        # 保存用户消息到会话历史（display_message 非空用 display，否则用 message）
-        stored = display_message if display_message else message
-        session.append({"role": "user", "content": stored})
-
-        # 首条消息 → 立即设置降级标题
-        session_data = self.sessions.get(session_id)
-        if session_data and len(session) == 1:
-            session_data["title"] = self._fallback_title(session)
-            self._save_sessions()
 
         # ----- 流式调用 LLM -----
         try:
@@ -457,7 +323,6 @@ class EnglishAgent:
                 if chunk.choices and chunk.choices[0].delta:
                     delta = chunk.choices[0].delta
 
-                    # 推理模型思考过程 → 替换为"思考中..."
                     reasoning = getattr(delta, "reasoning_content", None) or ""
                     if reasoning:
                         if not thinking_active:
@@ -473,14 +338,8 @@ class EnglishAgent:
                         full_response += content
                         yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
 
-            # 保存 AI 回复到会话历史
-            session.append({"role": "assistant", "content": full_response})
-            self._save_sessions()
-
-            # ----- 后台异步：向量记忆 + 摘要 -----
-            asyncio.create_task(
-                memory.add_exchange(message, full_response)
-            )
+            # 后台异步：向量记忆 + 摘要，不阻塞 SSE 响应收尾。
+            asyncio.create_task(memory.add_exchange(message, full_response))
             asyncio.create_task(memory.maybe_summarize())
 
             yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"

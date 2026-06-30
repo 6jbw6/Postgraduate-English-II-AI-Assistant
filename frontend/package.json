@@ -1,6 +1,6 @@
 {
   "name": "english-two-agent",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "vue": "^3.5.0",
+    "vue-router": "^4.4.0",
     "marked": "^15.0.0"
   },
   "devDependencies": {

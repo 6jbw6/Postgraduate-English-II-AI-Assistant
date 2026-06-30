@@ -1,0 +1,76 @@
+# ============================================================
+# 考研英语二 AI 学习助手 - Docker Compose
+#
+# 使用方式：
+#   1. 构建前端:  cd frontend && npm run build
+#   2. 启动服务:  docker-compose up -d
+#   3. 查看日志:  docker-compose logs -f
+#   4. 停止服务:  docker-compose down
+# ============================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: english-ii-app
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/app.db
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8000}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT_SECRET_KEY is required}
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+      - STORAGE_LOCAL_DIR=/app/data/uploads
+      - STORAGE_BASE_URL=${STORAGE_BASE_URL:-http://localhost:8000}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-english-ii-assets}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-minioadmin}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-minioadmin}
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    volumes:
+      # 持久化数据：数据库 + FAISS 记忆
+      - app_data:/app/data
+      - ./memory:/app/memory
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/ready')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: english-ii-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: english-ii-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+volumes:
+  app_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local

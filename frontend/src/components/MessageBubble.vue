@@ -53,6 +53,7 @@ const props = defineProps({
 
 const imgs = computed(() => props.images || [])
 
+// 图片预览状态只在当前消息气泡内部维护，避免影响其他消息。
 const showPreview = ref(false)
 const previewIdx = ref(0)
 </script>

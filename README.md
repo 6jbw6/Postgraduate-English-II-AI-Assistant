@@ -1,6 +1,6 @@
 # 考研英语二 AI 学习助手
 
-基于大语言模型（LLM）的考研英语二全题型智能辅导系统，搭载 FAISS 向量记忆引擎，实现长时语义记忆。
+基于大语言模型（LLM）的考研英语二全题型智能辅导系统，搭载 FAISS 向量记忆引擎，实现长时语义记忆。当前版本已加入多用户认证、数据库持久化、统一配置、限流、健康检查和容器化部署能力。
 
 ## 功能特色
 
@@ -13,6 +13,7 @@
 - **Markdown 渲染**：基于 marked 库 (GFM 规范)，支持表格、任务列表、删除线等全语法
 - **响应式设计**：适配桌面端和移动端
 - **持久化记忆**：重启项目后对话历史、FAISS 索引、摘要全部恢复，自动加载最近 10 条消息
+- **企业级运行能力**：JWT 认证、RBAC 权限、审计日志、Redis 限流/缓存、CORS 白名单、请求 ID、结构化日志、安全响应头、请求体大小限制、分层健康检查、Alembic 迁移、对象存储、Docker Compose、GitHub Actions CI
 
 ## 记忆系统架构
 
@@ -28,7 +29,7 @@
 └─────────────────────────────────────────────┘
 
 持久化层:
-  sessions.json  ← 会话元数据 + 消息列表
+  data/app.db    ← 用户、会话、消息
   memory/*.faiss ← FAISS 向量索引 (重启恢复)
   memory/*.faiss_meta ← pickle 元数据 (文本+摘要+计数)
 ```
@@ -38,7 +39,7 @@
 | 层级 | 技术 |
 |------|------|
 | 前端框架 | Vue 3 + Vite（KeepAlive 缓存 + IntersectionObserver 无限滚动）|
-| 后端框架 | Python FastAPI + Uvicorn |
+| 后端框架 | Python FastAPI + Uvicorn + SQLAlchemy |
 | AI 对话 | OpenAI 兼容 API（支持 DeepSeek、OpenAI 等），SSE 流式 |
 | LLM 记忆 | FAISS 向量索引 + Embedding 语义检索 + 定期摘要压缩 |
 | 图片 OCR | easyocr (PyTorch 深度学习，纯 Python，零外部依赖) |
@@ -52,7 +53,15 @@
 ```
 ├── backend/                 # 后端
 │   ├── __init__.py
-│   ├── main.py              # FastAPI 应用 + API 路由（含 .env 加载）
+│   ├── main.py              # FastAPI 应用 + API 路由
+│   ├── config.py            # 统一环境变量配置
+│   ├── auth.py              # JWT 认证与密码哈希
+│   ├── database.py          # SQLAlchemy 异步数据库模型
+│   ├── middleware.py        # 请求追踪与安全响应头
+│   ├── rate_limit.py        # 请求限流
+│   ├── cache.py             # Redis 缓存抽象（自动降级）
+│   ├── storage.py           # 本地/S3 对象存储抽象
+│   ├── schemas.py           # Pydantic 请求/响应模型
 │   ├── agent.py             # AI Agent 核心逻辑（混合记忆、LLM 调用）
 │   ├── prompts.py           # 各题型系统提示词
 │   └── requirements.txt     # Python 依赖（含 faiss-cpu, numpy）
@@ -72,8 +81,13 @@
 │           ├── ChatArea.vue     # 聊天主区域（无限滚动 + 图片上传）
 │           └── MessageBubble.vue # 消息气泡（图片网格 + 全屏预览）
 ├── memory/                  # FAISS 向量索引持久化目录（自动创建）
-├── sessions.json            # 会话持久化文件（自动生成）
+├── data/                    # SQLite 数据库目录（自动生成，不提交）
+├── migrations/              # Alembic 数据库迁移
+├── .github/workflows/ci.yml # GitHub Actions CI
 ├── .env                     # 环境变量配置（API Key / 模型等）
+├── .env.example             # 环境变量模板
+├── Dockerfile               # 前后端多阶段构建镜像
+├── docker-compose.yml       # 单机部署编排
 ├── .gitignore
 └── README.md
 ```
@@ -87,11 +101,13 @@
 
 ### 2. 配置环境变量
 
-编辑项目根目录下的 `.env` 文件，填入你的 API 配置：
+复制 `.env.example` 为 `.env`，填入你的 API 配置：
 ```env
 OPENAI_API_KEY=sk-your-api-key-here
 OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-v4-pro
+OPENAI_MODEL=deepseek-chat
+JWT_SECRET_KEY=change-this-to-a-long-random-secret-at-least-32-chars
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
 ### 3. 安装依赖
@@ -139,16 +155,116 @@ py backend/main.py
 
 访问 `http://localhost:8000` 即可。
 
+**Docker 部署**：
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+```
+
+生产部署必须配置 `JWT_SECRET_KEY`，建议同时按实际域名设置 `CORS_ORIGINS`。容器会自行构建前端产物，不需要在宿主机提前执行 `npm run build`。
+
+## 企业级配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `APP_ENV` | `development` | 设置为 `production` 时强制校验 JWT 密钥 |
+| `JSON_LOGS` | `false` | 是否输出 JSON 结构化访问日志 |
+| `ACCESS_LOG_ENABLED` | `true` | 是否记录访问日志 |
+| `MAX_REQUEST_BYTES` | `12582912` | 请求体大小上限，超限返回 413 |
+| `JWT_SECRET_KEY` | 开发默认值 | 生产必须设置 32 位以上随机字符串 |
+| `ADMIN_EMAILS` | 空 | 逗号分隔的管理员邮箱，注册时自动赋予 `admin` 角色 |
+| `CORS_ORIGINS` | 本地 Vite 地址 | 逗号分隔的允许来源 |
+| `DATABASE_URL` | `sqlite+aiosqlite:///data/app.db` | 可替换为生产数据库 |
+| `REDIS_URL` | 空 | 配置后启用 Redis 限流与缓存，例如 `redis://redis:6379/0` |
+| `CACHE_DEFAULT_TTL_SECONDS` | `300` | Redis 缓存默认 TTL |
+| `OCR_ENABLED` | `true` | 是否加载 easyocr |
+| `MAX_IMAGES_PER_REQUEST` | `9` | 单次请求图片数量上限 |
+| `MAX_IMAGE_BYTES` | `8388608` | 单张图片大小上限 |
+| `CHAT_RATE_LIMIT_PER_MINUTE` | `20` | 对话接口限流 |
+| `AUTH_RATE_LIMIT_PER_MINUTE` | `10` | 登录/注册接口限流 |
+| `STORAGE_BACKEND` | `local` | 对象存储后端：`local` 或 `s3` |
+| `STORAGE_LOCAL_DIR` | `./data/uploads` | 本地上传文件目录 |
+| `STORAGE_BASE_URL` | 空 | 对象访问基础 URL，例如 `https://cdn.example.com` |
+| `S3_ENDPOINT_URL` | 空 | S3 兼容服务地址，MinIO 可填 `http://minio:9000` |
+| `S3_BUCKET` | 空 | S3/MinIO bucket |
+| `S3_ACCESS_KEY_ID` | 空 | S3 access key |
+| `S3_SECRET_ACCESS_KEY` | 空 | S3 secret key |
+
+## 企业架构能力
+
+### Alembic 数据库迁移
+
+项目保留开发环境启动自动建表，生产环境建议使用 Alembic 管理结构变更：
+
+```bash
+alembic upgrade head
+alembic revision --autogenerate -m "change description"
+```
+
+首个迁移位于 `migrations/versions/20260630_0001_initial_enterprise_schema.py`，包含用户、会话、消息和审计日志表。
+
+### Redis 限流与缓存
+
+配置 `REDIS_URL` 后，限流从进程内存升级为 Redis 滑窗限流，支持多实例部署；题型列表等低频数据也会走 Redis 缓存。Redis 不可用时会自动降级到内存限流和空缓存。
+
+### 对象存储
+
+头像上传不再长期保存 Base64 到数据库。后端会将 Data URL 解码后写入对象存储，并在用户资料中保存 URL。
+
+- `STORAGE_BACKEND=local`：保存到 `STORAGE_LOCAL_DIR`，通过 `/uploads/...` 访问
+- `STORAGE_BACKEND=s3`：保存到 S3/MinIO，适合生产部署
+
+### RBAC 与审计日志
+
+用户表包含 `role` 字段，默认 `student`。可通过 `ADMIN_EMAILS=admin@example.com` 指定注册后自动成为管理员的邮箱。后端提供 `require_roles("admin")` 权限依赖，目前管理员接口包括：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/audit-logs` | 查看最近审计日志，需 `admin` 角色 |
+
+注册、登录、资料更新、删除会话等关键操作会写入 `audit_logs`。
+
+### CI/CD
+
+`.github/workflows/ci.yml` 已包含：
+
+- 后端单元测试
+- 前端构建
+- Docker 镜像构建检查
+
+推送到 `main/master` 或创建 PR 时自动执行。
+
+## 健康检查
+
+| 路径 | 说明 |
+|------|------|
+| `GET /api/health` | 基础状态与版本信息 |
+| `GET /api/health/live` | 进程存活检查 |
+| `GET /api/health/ready` | 数据库可用性检查，适合容器健康探针 |
+
+## 质量验证
+
+```bash
+py -m unittest discover -s backend\tests
+py -c "import py_compile; [py_compile.compile(p, doraise=True) for p in ['backend/config.py','backend/schemas.py','backend/auth.py','backend/database.py','backend/rate_limit.py','backend/agent.py','backend/main.py']]"
+cd frontend && npm run build
+```
+
 ## API 接口
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/health` | 健康检查 |
+| GET | `/api/health/live` | 存活检查 |
+| GET | `/api/health/ready` | 就绪检查（数据库） |
 | GET | `/api/question-types` | 获取题型列表 |
+| GET | `/api/v1/question-types` | 版本化 API，同 `/api/question-types` |
 | POST | `/api/chat` | 对话接口（SSE 流式） |
 | GET | `/api/sessions` | 获取所有历史会话列表（含标题、预览） |
 | GET | `/api/session/{id}` | 获取指定会话消息（支持 `?offset=0&limit=10` 分页，返回 `has_more`）|
 | DELETE | `/api/session/{id}` | 清除指定会话（JSON + FAISS 索引） |
+| GET | `/api/admin/audit-logs` | 管理员审计日志 |
 
 ### 对话上下文构建流程
 

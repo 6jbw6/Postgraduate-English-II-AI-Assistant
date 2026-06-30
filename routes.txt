@@ -1,0 +1,29 @@
+2026-06-30 11:01:54,598 INFO [faiss.loader] Loading faiss with AVX512 support.
+2026-06-30 11:01:54,598 INFO [faiss.loader] Could not load library with AVX512 support due to:
+ModuleNotFoundError("No module named 'faiss.swigfaiss_avx512'")
+2026-06-30 11:01:54,598 INFO [faiss.loader] Loading faiss with AVX2 support.
+2026-06-30 11:01:54,598 INFO [faiss.loader] Could not load library with AVX2 support due to:
+ModuleNotFoundError("No module named 'faiss.swigfaiss_avx2'")
+2026-06-30 11:01:54,598 INFO [faiss.loader] Loading faiss.
+2026-06-30 11:01:54,617 INFO [faiss.loader] Successfully loaded faiss.
+Registered Routes:
+/openapi.json - {'GET', 'HEAD'}
+/docs - {'GET', 'HEAD'}
+/docs/oauth2-redirect - {'GET', 'HEAD'}
+/redoc - {'GET', 'HEAD'}
+/api/health - {'GET'}
+/api/health/live - {'GET'}
+/api/health/ready - {'GET'}
+/api/question-types - {'GET'}
+/api/auth/register - {'POST'}
+/api/auth/login - {'POST'}
+/api/auth/me - {'GET'}
+/api/profile - {'POST'}
+/api/auth/me - {'PATCH'}
+/api/auth/me - {'POST'}
+/api/auth/me/profile - {'POST'}
+/api/sessions - {'GET'}
+/api/session/{session_id} - {'DELETE'}
+/api/session/{session_id} - {'GET'}
+/api/chat - {'POST'}
+/{full_path:path} - {'GET'}

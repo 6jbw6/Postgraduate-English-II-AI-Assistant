@@ -1,0 +1,36 @@
+{
+  "/api/health": {
+    "get": "@{summary=Health; operationId=health_api_health_get; responses=}"
+  },
+  "/api/health/live": {
+    "get": "@{summary=Liveness; operationId=liveness_api_health_live_get; responses=}"
+  },
+  "/api/health/ready": {
+    "get": "@{summary=Readiness; operationId=readiness_api_health_ready_get; responses=}"
+  },
+  "/api/question-types": {
+    "get": "@{summary=Get Question Types; operationId=get_question_types_api_question_types_get; responses=}"
+  },
+  "/api/auth/register": {
+    "post": "@{summary=Register; description=用户注册; operationId=register_api_auth_register_post; requestBody=; responses=}"
+  },
+  "/api/auth/login": {
+    "post": "@{summary=Login; description=用户登录; operationId=login_api_auth_login_post; requestBody=; responses=}"
+  },
+  "/api/auth/me": {
+    "get": "@{summary=Get Me; description=获取当前登录用户信息; operationId=get_me_api_auth_me_get; responses=; security=System.Object[]}"
+  },
+  "/api/sessions": {
+    "get": "@{summary=List Sessions; description=获取当前用户的所有会话列表; operationId=list_sessions_api_sessions_get; responses=; security=System.Object[]}"
+  },
+  "/api/session/{session_id}": {
+    "delete": "@{summary=Clear Session; description=清除指定会话（数据库 + FAISS 索引）; operationId=clear_session_api_session__session_id__delete; security=System.Object[]; parameters=System.Object[]; responses=}",
+    "get": "@{summary=Get Session; description=获取指定会话消息（支持分页）; operationId=get_session_api_session__session_id__get; security=System.Object[]; parameters=System.Object[]; responses=}"
+  },
+  "/api/chat": {
+    "post": "@{summary=Chat; description=核心对话接口（SSE 流式响应，需认证）\n\n处理流程：\n1. 创建或获取会话（归属当前用户）\n2. 如有图片，OCR 提取文字 → 拼入消息\n3. 从数据库加载历史消息\n4. 流式调用 Agent.chat()\n5. 保存消息到数据库; operationId=chat_api_chat_post; requestBody=; responses=; security=System.Object[]}"
+  },
+  "/{full_path}": {
+    "get": "@{summary=Serve Frontend; operationId=serve_frontend__full_path__get; parameters=System.Object[]; responses=}"
+  }
+}

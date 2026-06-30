@@ -1,19 +1,10 @@
 <!--
-  ChatArea.vue - 聊天主区域
+  ChatArea.vue - 聊天主区域（企业版）
 
-  每个 ChatArea 实例对应一个题型会话。
-  Props:
-  - currentType: 当前题型 id（如 cloze, reading_a）
-  - sessionId: 会话标识（空字符串 = 新会话）
-
-  Emits:
-  - update-session-id: 首次回复后告知父组件当前题型的 session_id
-  - thinking-changed: AI 思考状态变化
-  - change-type: 切换题型
+  使用认证 API 封装发起请求，自动携带 JWT Token。
 -->
 <template>
   <div class="chat-main">
-    <!-- 顶部标题栏 -->
     <header class="chat-header">
       <div class="header-left">
         <div class="type-icon">{{ currentTypeObj.icon || '💬' }}</div>
@@ -22,17 +13,13 @@
           <div class="current-type-desc">{{ currentTypeObj.description || '不限定题型，随意提问' }}</div>
         </div>
       </div>
-      <div v-if="isStreaming" class="status-badge">AI 思考中...</div>
     </header>
 
-    <!-- 消息列表（无限滚动） -->
-    <div class="chat-messages" ref="messagesContainer">
-      <!-- 顶部滚动哨兵：触发加载更早历史 -->
+    <div class="chat-messages" ref="messagesContainer" @scroll="handleMessagesScroll">
       <div class="scroll-sentinel">
         <span v-if="isLoadingHistory">加载历史中...</span>
       </div>
 
-      <!-- 欢迎引导 -->
       <div v-if="messages.length === 0 && !isLoadingHistory" class="welcome-box">
         <div class="welcome-icon">🎓</div>
         <h2>你好！我是考研英语二 AI 学习助手</h2>
@@ -52,9 +39,7 @@
       />
     </div>
 
-    <!-- 输入区域 -->
     <div class="chat-input-area">
-      <!-- 图片预览 -->
       <div v-if="uploadedImages.length > 0" class="image-preview-grid">
         <div v-for="(img, idx) in uploadedImages" :key="idx" class="image-preview-item">
           <img :src="img" alt="preview" />
@@ -62,7 +47,6 @@
         </div>
       </div>
 
-      <!-- 输入行 -->
       <div class="input-row">
         <textarea
           v-model="inputText"
@@ -101,8 +85,9 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch, onMounted } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onActivated } from 'vue'
 import MessageBubble from './MessageBubble.vue'
+import { apiStream, apiGet } from '../utils/api.js'
 
 const props = defineProps({
   currentType: { type: String, default: '' },
@@ -110,12 +95,11 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'update-session-id',  // 首次回复后告知父组件当前题型的 session_id
-  'thinking-changed',   // AI 思考状态变化
-  'change-type',        // 切换题型
+  'update-session-id',
+  'thinking-changed',
+  'change-type',
 ])
 
-// ---- 题型元数据 ----
 const questionTypes = [
   { id: 'cloze',      icon: '📝', name: '完形填空',  description: 'Use of English - 20题/10分' },
   { id: 'reading_a',  icon: '📖', name: '阅读理解A', description: '传统阅读 - 4篇/40分' },
@@ -130,13 +114,11 @@ const currentTypeObj = computed(() => {
   return questionTypes.find(t => t.id === typeId) || {}
 })
 
-// ---- 状态 ----
 const messages = ref([])
 const isStreaming = ref(false)
 const inputText = ref('')
 const messagesContainer = ref(null)
 const textareaRef = ref(null)
-const scrollObserver = ref(null)
 const uploadedImages = ref([])
 const fileInput = ref(null)
 const isProcessingPaste = ref(false)
@@ -144,17 +126,18 @@ const isProcessingPaste = ref(false)
 let abortController = null
 const MAX_IMAGES = 9
 
-// ---- 无限滚动 ----
 const isLoadingHistory = ref(false)
 const hasMoreHistory = ref(true)
 const historyOffset = ref(0)
 const HISTORY_PAGE = 10
+const TOP_LOAD_THRESHOLD = 8
+// 程序主动滚到底部时会触发 scroll 事件，这个开关用于避免误判为“用户滚到顶部”。
+let suppressTopLoad = false
 
-// 内部 session_id（首次响应后从 SSE 获取）
 const internalSid = ref(props.sessionId)
 
-// 当 sessionId prop 变化时，重置并重新加载
 watch(() => props.sessionId, (newSid) => {
+  if (newSid === internalSid.value) return
   internalSid.value = newSid
   messages.value = []
   historyOffset.value = 0
@@ -167,47 +150,25 @@ onMounted(() => {
   loadLatestHistory()
 })
 
-// ---- 滚动哨兵 ----
-function setupScrollObserver() {
-  nextTick(() => {
-    const el = messagesContainer.value
-    if (!el) return
-    if (scrollObserver.value) scrollObserver.value.disconnect()
+onActivated(() => {
+  // ChatArea 被 KeepAlive 缓存，重新进入题型时要恢复到最近消息位置。
+  scrollToBottom()
+})
 
-    const sentinel = el.querySelector('.scroll-sentinel')
-    if (!sentinel) return
-
-    scrollObserver.value = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && hasMoreHistory.value && !isLoadingHistory.value) {
-          loadOlderHistory()
-        }
-      },
-      { root: el, rootMargin: '20px 0px 0px 0px', threshold: 0 },
-    )
-    scrollObserver.value.observe(sentinel)
-  })
-}
-
-watch(() => messages.value.length, () => setupScrollObserver())
-
-// ---- 历史加载 ----
 async function loadLatestHistory() {
+  // 首屏只取最近 10 条，后续由用户滚到顶部再分页加载更早消息。
   const sid = internalSid.value
   if (!sid || isLoadingHistory.value) return
   isLoadingHistory.value = true
   try {
-    const res = await fetch(`/api/session/${sid}?offset=0&limit=${HISTORY_PAGE}`)
-    if (res.ok) {
-      const data = await res.json()
-      const msgs = (data.messages || []).map((m) => ({
-        role: m.role === 'assistant' ? 'ai' : 'user',
-        content: m.content,
-      }))
-      messages.value = msgs
-      historyOffset.value = msgs.length
-      hasMoreHistory.value = data.has_more
-    }
+    const data = await apiGet(`/api/session/${sid}?offset=0&limit=${HISTORY_PAGE}`)
+    const msgs = (data.messages || []).map((m) => ({
+      role: m.role === 'assistant' ? 'ai' : 'user',
+      content: m.content,
+    }))
+    messages.value = msgs
+    historyOffset.value = msgs.length
+    hasMoreHistory.value = data.has_more
   } catch (err) { console.error(err) }
   finally {
     isLoadingHistory.value = false
@@ -215,37 +176,43 @@ async function loadLatestHistory() {
   }
 }
 
+function handleMessagesScroll() {
+  if (suppressTopLoad) return
+  const el = messagesContainer.value
+  if (!el || el.scrollTop > TOP_LOAD_THRESHOLD) return
+  // 只有真正接近顶部时才加载更早历史，避免初次渲染自动连续请求。
+  loadOlderHistory()
+}
+
 async function loadOlderHistory() {
   const sid = internalSid.value
   if (!sid || isLoadingHistory.value || !hasMoreHistory.value) return
   isLoadingHistory.value = true
   try {
-    const res = await fetch(`/api/session/${sid}?offset=${historyOffset.value}&limit=${HISTORY_PAGE}`)
-    if (res.ok) {
-      const data = await res.json()
-      const older = (data.messages || []).map((m) => ({
-        role: m.role === 'assistant' ? 'ai' : 'user',
-        content: m.content,
-      }))
-      if (older.length > 0) {
-        const container = messagesContainer.value
-        const prevHeight = container?.scrollHeight || 0
-        messages.value = [...older, ...messages.value]
-        nextTick(() => {
-          if (container) container.scrollTop = container.scrollHeight - prevHeight
-        })
-      }
-      historyOffset.value += older.length
-      hasMoreHistory.value = data.has_more
+    const data = await apiGet(`/api/session/${sid}?offset=${historyOffset.value}&limit=${HISTORY_PAGE}`)
+    const older = (data.messages || []).map((m) => ({
+      role: m.role === 'assistant' ? 'ai' : 'user',
+      content: m.content,
+    }))
+    if (older.length > 0) {
+      const container = messagesContainer.value
+      const prevHeight = container?.scrollHeight || 0
+      messages.value = [...older, ...messages.value]
+      nextTick(() => {
+        // 前插历史后保持用户原来的阅读位置，不让视口跳到最顶部。
+        if (container) container.scrollTop = container.scrollHeight - prevHeight
+      })
     }
+    historyOffset.value += older.length
+    hasMoreHistory.value = data.has_more
   } catch (err) { console.error(err) }
   finally {
     isLoadingHistory.value = false
   }
 }
 
-// ---- 图片上传 ----
 function fileToBase64(file) {
+  // 后端聊天接口接收 Base64 图片，前端预览也直接复用 Data URL。
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result)
@@ -261,6 +228,7 @@ function addImages(dataUrls) {
 }
 
 async function handlePaste(e) {
+  // 支持直接粘贴截图，体验上和选择文件保持一致。
   const items = e.clipboardData?.items
   if (!items) return
   for (const item of items) {
@@ -273,18 +241,14 @@ async function handlePaste(e) {
         try {
           const dataUrl = await fileToBase64(file)
           addImages([dataUrl])
-        } finally {
-          isProcessingPaste.value = false
-        }
+        } finally { isProcessingPaste.value = false }
       }
       return
     }
   }
 }
 
-function triggerUpload() {
-  fileInput.value?.click()
-}
+function triggerUpload() { fileInput.value?.click() }
 
 async function handleFileChange(e) {
   const files = Array.from(e.target.files || [])
@@ -293,31 +257,29 @@ async function handleFileChange(e) {
   try {
     const dataUrls = await Promise.all(files.map(fileToBase64))
     addImages(dataUrls)
-  } finally {
-    isProcessingPaste.value = false
-  }
+  } finally { isProcessingPaste.value = false }
   e.target.value = ''
 }
 
-function removeImage(idx) {
-  uploadedImages.value.splice(idx, 1)
-}
+function removeImage(idx) { uploadedImages.value.splice(idx, 1) }
 
-// ---- 滚动到底部 ----
 function scrollToBottom() {
   nextTick(() => {
     const el = messagesContainer.value
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    suppressTopLoad = true
+    el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => {
+      suppressTopLoad = false
+    })
   })
 }
 
-// ---- 发送消息 ----
 async function sendMessage() {
   const message = inputText.value.trim()
   const hasImages = uploadedImages.value.length > 0
   if (!message && !hasImages) return
-  if (isStreaming.value) return
-  if (isProcessingPaste.value) return
+  if (isStreaming.value || isProcessingPaste.value) return
 
   if (abortController) {
     abortController.abort()
@@ -327,10 +289,10 @@ async function sendMessage() {
   isStreaming.value = true
 
   const imagesB64 = hasImages
+    // 提交给后端时只需要 Base64 主体，页面展示仍保留完整 Data URL。
     ? uploadedImages.value.map(url => url.split(',')[1] || url)
     : null
 
-  // 添加用户消息
   messages.value.push({
     role: 'user',
     content: message || '',
@@ -339,7 +301,6 @@ async function sendMessage() {
   inputText.value = ''
   uploadedImages.value = []
 
-  // 添加 AI 占位
   messages.value.push({ role: 'ai', content: '' })
   scrollToBottom()
 
@@ -348,16 +309,11 @@ async function sendMessage() {
 
   try {
     const typeParam = props.currentType === 'free' ? '' : props.currentType
-    const response = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: internalSid.value,
-        message,
-        question_type: typeParam || null,
-        images: imagesB64,
-      }),
-      signal: controller.signal,
+    const response = await apiStream('/api/chat', {
+      session_id: internalSid.value,
+      message,
+      question_type: typeParam || null,
+      images: imagesB64,
     })
 
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -380,15 +336,14 @@ async function sendMessage() {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue
         try {
+          // 后端以 SSE 形式逐段返回 JSON，这里按 data: 行解析并增量追加内容。
           const data = JSON.parse(line.slice(6))
 
-          // 首次响应：获取 session_id
           if (data.session_id && !internalSid.value) {
             internalSid.value = data.session_id
             emit('update-session-id', { type: props.currentType, sid: data.session_id })
           }
 
-          // 思考状态
           if (data.thinking === true) {
             messages.value[aiIdx].content = data.content
             emit('thinking-changed', { type: props.currentType, thinking: true })
@@ -405,7 +360,7 @@ async function sendMessage() {
             messages.value[aiIdx].content += data.content
             scrollToBottom()
           }
-        } catch (e) { /* skip malformed SSE */ }
+        } catch (e) { /* 跳过格式异常的 SSE 片段 */ }
       }
     }
   } catch (err) {
@@ -458,19 +413,6 @@ async function sendMessage() {
 }
 .current-type { font-size: 15px; font-weight: 600; color: var(--text); }
 .current-type-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-.status-badge {
-  font-size: 12px;
-  color: var(--warning);
-  background: #fffbeb;
-  padding: 4px 12px;
-  border-radius: 12px;
-  animation: pulse 1.5s infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -496,21 +438,9 @@ async function sendMessage() {
   justify-content: center;
   text-align: center;
 }
-.welcome-icon {
-  font-size: 56px;
-  line-height: 1;
-  margin-bottom: 16px;
-}
-.welcome-box h2 {
-  font-size: 18px;
-  color: var(--text);
-  margin-bottom: 8px;
-}
-.welcome-desc {
-  color: var(--text-secondary);
-  line-height: 1.8;
-  font-size: 14px;
-}
+.welcome-icon { font-size: 56px; line-height: 1; margin-bottom: 16px; }
+.welcome-box h2 { font-size: 18px; color: var(--text); margin-bottom: 8px; }
+.welcome-desc { color: var(--text-secondary); line-height: 1.8; font-size: 14px; }
 
 .chat-input-area {
   padding: 16px 24px;
@@ -519,106 +449,34 @@ async function sendMessage() {
   flex-shrink: 0;
 }
 
-.image-preview-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.image-preview-item {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-}
-.image-preview-item img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+.image-preview-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.image-preview-item { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+.image-preview-item img { width: 100%; height: 100%; object-fit: cover; }
 .btn-remove-img {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.5);
-  color: #fff;
-  border: none;
-  font-size: 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  line-height: 1;
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+  border-radius: 50%; background: rgba(0,0,0,0.5); color: #fff; border: none;
+  font-size: 12px; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; padding: 0; line-height: 1;
 }
 
-.input-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-}
-
+.input-row { display: flex; gap: 10px; align-items: flex-end; }
 .chat-textarea {
-  flex: 1;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-family: inherit;
-  line-height: 1.5;
-  resize: none;
-  outline: none;
-  background: var(--bg);
-  color: var(--text);
-  transition: border-color 0.2s;
-  max-height: 160px;
+  flex: 1; padding: 10px 14px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 14px; font-family: inherit;
+  line-height: 1.5; resize: none; outline: none; background: var(--bg);
+  color: var(--text); transition: border-color 0.2s; max-height: 160px;
 }
-.chat-textarea:focus {
-  border-color: var(--primary);
-}
-.chat-textarea:disabled {
-  opacity: 0.6;
-}
+.chat-textarea:focus { border-color: var(--primary); }
+.chat-textarea:disabled { opacity: 0.6; }
 
-.action-buttons {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+.action-buttons { display: flex; gap: 6px; flex-shrink: 0; }
+.btn-icon, .btn-send {
+  width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); cursor: pointer; font-size: 18px; display: flex;
+  align-items: center; justify-content: center; transition: all 0.15s;
 }
-.btn-icon,
-.btn-send {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  cursor: pointer;
-  font-size: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
-}
-.btn-icon:hover:not(:disabled) {
-  background: var(--primary-bg);
-  border-color: var(--primary);
-}
-.btn-send {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}
-.btn-send:hover:not(:disabled) {
-  background: var(--primary-light);
-}
-.btn-send:disabled,
-.btn-icon:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+.btn-icon:hover:not(:disabled) { background: var(--primary-bg); border-color: var(--primary); }
+.btn-send { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-send:hover:not(:disabled) { background: var(--primary-light); }
+.btn-send:disabled, .btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

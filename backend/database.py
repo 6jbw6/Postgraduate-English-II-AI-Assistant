@@ -17,6 +17,7 @@ from pathlib import Path
 from sqlalchemy import (
     Column, String, Text, DateTime, Integer, ForeignKey, create_engine, event, inspect, text,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
@@ -99,7 +100,7 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)
     role = Column(String(32), default="student", nullable=False)
     display_name = Column(String(64), nullable=True)
-    avatar_url = Column(Text, nullable=True)
+    avatar_url = Column(Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=True)
     exam_stage = Column(String(64), nullable=True)
     target_score = Column(String(16), nullable=True)
     study_goal = Column(String(256), nullable=True)
@@ -135,7 +136,7 @@ class Message(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String(16), nullable=False)  # "user" | "assistant"
-    content = Column(Text, nullable=False, default="")
+    content = Column(Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=False, default="")
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
     session = relationship("Session", back_populates="messages")
@@ -150,7 +151,7 @@ class AuditLog(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     action = Column(String(64), nullable=False)
     resource = Column(String(128), nullable=False, default="")
-    detail = Column(Text, nullable=False, default="")
+    detail = Column(Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=False, default="")
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 

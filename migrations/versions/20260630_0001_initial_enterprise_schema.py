@@ -7,6 +7,7 @@ Create Date: 2026-06-30
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import mysql
 
 
 revision = "20260630_0001"
@@ -24,7 +25,7 @@ def upgrade() -> None:
         sa.Column("password_hash", sa.String(length=256), nullable=False),
         sa.Column("role", sa.String(length=32), nullable=False, server_default="student"),
         sa.Column("display_name", sa.String(length=64), nullable=True),
-        sa.Column("avatar_url", sa.Text(), nullable=True),
+        sa.Column("avatar_url", sa.Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=True),
         sa.Column("exam_stage", sa.String(length=64), nullable=True),
         sa.Column("target_score", sa.String(length=16), nullable=True),
         sa.Column("study_goal", sa.String(length=256), nullable=True),
@@ -49,7 +50,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("session_id", sa.String(length=64), sa.ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False),
         sa.Column("role", sa.String(length=16), nullable=False),
-        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("content", sa.Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
     )
     op.create_index("ix_messages_session_id", "messages", ["session_id"])
@@ -60,7 +61,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("action", sa.String(length=64), nullable=False),
         sa.Column("resource", sa.String(length=128), nullable=False, server_default=""),
-        sa.Column("detail", sa.Text(), nullable=False),
+        sa.Column("detail", sa.Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
     )
     op.create_index("ix_audit_logs_user_id", "audit_logs", ["user_id"])

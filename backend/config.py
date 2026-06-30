@@ -1,7 +1,7 @@
 """
 运行时配置中心
 
-配置优先从环境变量读取；本地开发时会轻量加载项目根目录下的 .env。
+本地开发优先读取项目根目录下的 .env。
 生产环境应通过部署平台注入密钥，避免把敏感信息写进镜像或代码仓库。
 """
 
@@ -21,7 +21,11 @@ MEMORY_DIR = ROOT_DIR / "memory"
 
 
 def _load_dotenv() -> None:
-    """加载本地 .env，但不覆盖已经存在的环境变量。"""
+    """加载本地 .env。
+
+    开发时经常在同一个终端里反复改 key；这里让 .env 覆盖旧环境变量，
+    避免后端进程继续拿到上一次 shell 里残留的 OPENAI_API_KEY。
+    """
     env_path = ROOT_DIR / ".env"
     if not env_path.exists():
         return
@@ -31,7 +35,7 @@ def _load_dotenv() -> None:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+            os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
 
 def _csv(value: str | None, default: list[str]) -> list[str]:

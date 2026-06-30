@@ -2,7 +2,7 @@
 数据库模块 - SQLAlchemy 异步引擎 + ORM 模型
 
 替代原有的 sessions.json + pickle 文件持久化方案。
-使用 SQLite（开发/单机）或 PostgreSQL（生产）作为后端。
+默认使用 MySQL；也兼容 SQLite（开发/单机）或 PostgreSQL 等 SQLAlchemy 支持的数据库。
 
 表结构：
 - users:     用户表（id, username, email, password_hash, created_at）

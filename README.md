@@ -29,7 +29,7 @@
 └─────────────────────────────────────────────┘
 
 持久化层:
-  data/app.db    ← 用户、会话、消息
+  MySQL          ← 用户、会话、消息、审计日志
   memory/*.faiss ← FAISS 向量索引 (重启恢复)
   memory/*.faiss_meta ← pickle 元数据 (文本+摘要+计数)
 ```
@@ -81,7 +81,7 @@
 │           ├── ChatArea.vue     # 聊天主区域（无限滚动 + 图片上传）
 │           └── MessageBubble.vue # 消息气泡（图片网格 + 全屏预览）
 ├── memory/                  # FAISS 向量索引持久化目录（自动创建）
-├── data/                    # SQLite 数据库目录（自动生成，不提交）
+├── data/                    # 本地上传文件/临时数据目录（自动生成，不提交）
 ├── migrations/              # Alembic 数据库迁移
 ├── .github/workflows/ci.yml # GitHub Actions CI
 ├── .env                     # 环境变量配置（API Key / 模型等）
@@ -98,6 +98,7 @@
 
 - Python >= 3.10
 - Node.js >= 18
+- MySQL 8.x（Docker 部署会自动启动 MySQL 服务）
 
 ### 2. 配置环境变量
 
@@ -108,6 +109,7 @@ OPENAI_BASE_URL=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-chat
 JWT_SECRET_KEY=change-this-to-a-long-random-secret-at-least-32-chars
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+DATABASE_URL=mysql+aiomysql://english_user:english_password@localhost:3306/english_ii?charset=utf8mb4
 ```
 
 ### 3. 安装依赖
@@ -162,7 +164,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-生产部署必须配置 `JWT_SECRET_KEY`，建议同时按实际域名设置 `CORS_ORIGINS`。容器会自行构建前端产物，不需要在宿主机提前执行 `npm run build`。
+生产部署必须配置 `JWT_SECRET_KEY` 和 `MYSQL_ROOT_PASSWORD`，建议同时按实际域名设置 `CORS_ORIGINS`。容器会自行构建前端产物，并启动 MySQL、Redis、MinIO，不需要在宿主机提前执行 `npm run build`。
 
 ## 企业级配置
 
@@ -175,7 +177,11 @@ docker compose logs -f
 | `JWT_SECRET_KEY` | 开发默认值 | 生产必须设置 32 位以上随机字符串 |
 | `ADMIN_EMAILS` | 空 | 逗号分隔的管理员邮箱，注册时自动赋予 `admin` 角色 |
 | `CORS_ORIGINS` | 本地 Vite 地址 | 逗号分隔的允许来源 |
-| `DATABASE_URL` | `sqlite+aiosqlite:///data/app.db` | 可替换为生产数据库 |
+| `DATABASE_URL` | `mysql+aiomysql://...` | MySQL 异步连接串，格式见 `.env.example` |
+| `MYSQL_DATABASE` | `english_ii` | Docker Compose 内置 MySQL 数据库名 |
+| `MYSQL_USER` | `english_user` | Docker Compose 内置 MySQL 应用用户 |
+| `MYSQL_PASSWORD` | `english_password` | Docker Compose 内置 MySQL 应用用户密码 |
+| `MYSQL_ROOT_PASSWORD` | 无 | Docker Compose 内置 MySQL root 密码，生产必须设置 |
 | `REDIS_URL` | 空 | 配置后启用 Redis 限流与缓存，例如 `redis://redis:6379/0` |
 | `CACHE_DEFAULT_TTL_SECONDS` | `300` | Redis 缓存默认 TTL |
 | `OCR_ENABLED` | `true` | 是否加载 easyocr |
@@ -218,9 +224,9 @@ alembic revision --autogenerate -m "change description"
 - `CHAT_HISTORY_MESSAGES_LIMIT`，控制每次对话加载的最近消息数，避免长会话拖慢查询和上下文构建
 - `REDIS_MAX_CONNECTIONS`，限制缓存/限流占用的 Redis 连接数
 - `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT_SECONDS`，调大数据库连接池
-- SQLite 单机部署可设置 `SQLITE_BUSY_TIMEOUT_SECONDS` 缓解短时写锁冲突；高并发生产环境建议切换 PostgreSQL
+- MySQL 部署建议按 `WEB_CONCURRENCY * (DB_POOL_SIZE + DB_MAX_OVERFLOW)` 预估最大连接数，并同步调整 MySQL `max_connections`
 - `OCR_MAX_CONCURRENCY`，限制 OCR 同时处理的图片数，避免 CPU 被打满
-- 使用 PostgreSQL / MySQL + Alembic 迁移，不要依赖启动时自动建表
+- 使用 MySQL + Alembic 迁移，不要依赖启动时自动建表
 - 对象存储使用 S3/MinIO，避免大文件长期落数据库或本地磁盘
 
 如果是容器编排，多副本应用建议前面挂负载均衡，后面统一接 Redis、数据库和对象存储。

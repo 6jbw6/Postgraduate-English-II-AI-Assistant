@@ -60,7 +60,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("action", sa.String(length=64), nullable=False),
         sa.Column("resource", sa.String(length=128), nullable=False, server_default=""),
-        sa.Column("detail", sa.Text(), nullable=False, server_default=""),
+        sa.Column("detail", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
     )
     op.create_index("ix_audit_logs_user_id", "audit_logs", ["user_id"])

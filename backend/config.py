@@ -90,7 +90,7 @@ class Settings(BaseModel):
     database_url: str = Field(
         default_factory=lambda: os.getenv(
             "DATABASE_URL",
-            f"sqlite+aiosqlite:///{DATA_DIR / 'app.db'}",
+            "mysql+aiomysql://english_user:english_password@localhost:3306/english_ii?charset=utf8mb4",
         )
     )
     db_pool_size: int = Field(default_factory=lambda: _int("DB_POOL_SIZE", 10), ge=1)
@@ -196,6 +196,8 @@ class Settings(BaseModel):
             return self.database_url.replace("sqlite+aiosqlite:///", "sqlite:///", 1)
         if self.database_url.startswith("postgresql+asyncpg://"):
             return self.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        if self.database_url.startswith("mysql+aiomysql://"):
+            return self.database_url.replace("mysql+aiomysql://", "mysql+pymysql://", 1)
         return self.database_url
 
     @model_validator(mode="after")

@@ -1,7 +1,10 @@
 import base64
+import os
 import unittest
 
 from pydantic import ValidationError
+
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/test.db")
 
 from backend.config import Settings
 from backend.auth import UserProfileUpdate

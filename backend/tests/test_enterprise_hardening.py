@@ -1,7 +1,10 @@
+import os
 import unittest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/test.db")
 
 from backend.auth import get_current_user
 from backend.database import User, get_db

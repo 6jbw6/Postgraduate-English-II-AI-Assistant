@@ -139,7 +139,15 @@
             </label>
             <label class="form-field">
               <span>目标分数</span>
-              <input v-model.trim="draft.target_score" maxlength="16" placeholder="例如：75+" />
+              <input
+                v-model.trim="draft.target_score"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                inputmode="numeric"
+                placeholder="0-100"
+              />
             </label>
             <label class="form-field">
               <span>学习目标</span>
@@ -261,17 +269,31 @@ function handleAvatarChange(event) {
   reader.readAsDataURL(file)
 }
 
+function normalizeTargetScore(value) {
+  const scoreText = String(value || '').trim()
+  if (!scoreText) return ''
+  if (!/^\d+$/.test(scoreText)) {
+    throw new Error('目标分数必须是 0-100 的整数')
+  }
+  const score = Number(scoreText)
+  if (!Number.isInteger(score) || score < 0 || score > 100) {
+    throw new Error('目标分数必须是 0-100 的整数')
+  }
+  return String(score)
+}
+
 async function submitProfile() {
   savingProfile.value = true
   profileError.value = ''
   try {
     if (!props.saveProfile) throw new Error('保存接口未配置')
+    const targetScore = normalizeTargetScore(draft.value.target_score)
     // 保存逻辑由父组件注入，Sidebar 只负责收集和展示个人资料。
     await props.saveProfile({
       display_name: draft.value.display_name,
       avatar_url: draft.value.avatar_url,
       exam_stage: draft.value.exam_stage,
-      target_score: draft.value.target_score,
+      target_score: targetScore,
       study_goal: draft.value.study_goal,
     })
     editingProfile.value = false

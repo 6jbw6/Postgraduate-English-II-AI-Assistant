@@ -7,7 +7,7 @@ from pydantic import ValidationError
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/test.db")
 
 from backend.config import Settings
-from backend.auth import UserProfileUpdate
+from backend.auth import UserProfileUpdate, UserRegister
 from backend.middleware import RequestContextMiddleware
 from backend.schemas import ChatRequest
 from backend.storage import decode_data_url, storage
@@ -37,6 +37,35 @@ class ConfigAndSchemaTests(unittest.TestCase):
     def test_chat_request_rejects_invalid_base64_image(self):
         with self.assertRaises(ValidationError):
             ChatRequest(message="", images=["not valid base64"])
+
+    def test_user_register_accepts_common_email_domain(self):
+        user = UserRegister(username="student", email="Student@QQ.COM", password="password123")
+
+        self.assertEqual(user.email, "student@qq.com")
+
+    def test_user_register_accepts_common_email_domain_without_provider_specific_rule(self):
+        user = UserRegister(username="student", email="2432@qq.com", password="password123")
+
+        self.assertEqual(user.email, "2432@qq.com")
+
+    def test_user_register_rejects_invalid_email_format(self):
+        with self.assertRaises(ValidationError):
+            UserRegister(username="student", email="student@123.123", password="password123")
+
+    def test_user_register_rejects_uncommon_email_domain(self):
+        with self.assertRaises(ValidationError):
+            UserRegister(username="student", email="student@example.org", password="password123")
+
+    def test_profile_target_score_accepts_integer_between_0_and_100(self):
+        profile = UserProfileUpdate(target_score=" 100 ")
+
+        self.assertEqual(profile.target_score, "100")
+
+    def test_profile_target_score_rejects_out_of_range_or_non_integer(self):
+        for value in ("101", "-1", "75+", "80.5"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    UserProfileUpdate(target_score=value)
 
     def test_avatar_data_url_allows_larger_image_under_limit(self):
         image = base64.b64encode(b"x" * (1024 * 1024)).decode("ascii")

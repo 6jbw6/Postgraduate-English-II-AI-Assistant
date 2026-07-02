@@ -43,9 +43,49 @@ ACCESS_TOKEN_EXPIRE_HOURS = settings.access_token_expire_hours
 # 头像以 Data URL 存储时会比原始二进制膨胀约 1/3，因此字段长度和真实字节数分开校验。
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 AVATAR_MAX_DATA_URL_CHARS = (AVATAR_MAX_BYTES * 4 // 3) + 1024
+EMAIL_PATTERN = re.compile(
+    r"^(?=.{5,128}$)(?!.*\.\.)"
+    r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}$"
+)
+COMMON_EMAIL_DOMAINS = {
+    "qq.com",
+    "foxmail.com",
+    "163.com",
+    "126.com",
+    "yeah.net",
+    "sina.com",
+    "sina.cn",
+    "sohu.com",
+    "139.com",
+    "189.cn",
+    "21cn.com",
+    "aliyun.com",
+    "gmail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "icloud.com",
+    "yahoo.com",
+    "proton.me",
+    "protonmail.com",
+}
 
 # HTTP Bearer 安全方案
 security = HTTPBearer(auto_error=False)
+
+
+def normalize_email_address(value: str) -> str:
+    """规范化邮箱，并校验完整格式；不联网验证邮箱是否真实存在。"""
+    value = value.strip().lower()
+    if not EMAIL_PATTERN.fullmatch(value):
+        raise ValueError("邮箱格式不正确")
+    domain = value.rsplit("@", 1)[1]
+    if domain not in COMMON_EMAIL_DOMAINS:
+        raise ValueError("邮箱格式不正确")
+    return value
 
 
 # ============================================================
@@ -71,10 +111,7 @@ class UserRegister(BaseModel):
     @classmethod
     def normalize_email(cls, value: str) -> str:
         """邮箱统一转小写，避免大小写造成重复账号。"""
-        value = value.strip().lower()
-        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
-            raise ValueError("邮箱格式不正确")
-        return value
+        return normalize_email_address(value)
 
 
 class UserLogin(BaseModel):
@@ -86,7 +123,7 @@ class UserLogin(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
-        return value.strip().lower()
+        return normalize_email_address(value)
 
 
 class UserOut(BaseModel):
@@ -122,6 +159,19 @@ class UserProfileUpdate(BaseModel):
             return None
         value = value.strip()
         return value or None
+
+    @field_validator("target_score")
+    @classmethod
+    def validate_target_score(cls, value: str | None) -> str | None:
+        """目标分数必须是 0-100 的整数。"""
+        if value is None:
+            return None
+        if not value.isdecimal():
+            raise ValueError("目标分数必须是 0-100 的整数")
+        score = int(value)
+        if score < 0 or score > 100:
+            raise ValueError("目标分数必须是 0-100 的整数")
+        return str(score)
 
     @field_validator("avatar_url")
     @classmethod

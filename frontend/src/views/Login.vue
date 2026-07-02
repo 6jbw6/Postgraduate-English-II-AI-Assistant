@@ -62,6 +62,8 @@ async function handleLogin() {
     const data = await apiPost('/api/auth/login', {
       email: email.value,
       password: password.value,
+    }, {
+      redirectOnUnauthorized: false,
     })
     setToken(data.access_token)
     setUser(data.user)

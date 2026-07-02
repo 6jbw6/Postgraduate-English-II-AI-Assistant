@@ -41,9 +41,10 @@ export function isAuthenticated() {
 // ---- 通用请求 ----
 export async function api(path, options = {}) {
   const token = getToken()
+  const { redirectOnUnauthorized = true, ...fetchOptions } = options
   const headers = {
     'Content-Type': 'application/json',
-    ...(options.headers || {}),
+    ...(fetchOptions.headers || {}),
   }
 
   if (token) {
@@ -51,12 +52,12 @@ export async function api(path, options = {}) {
   }
 
   const response = await fetch(path, {
-    ...options,
+    ...fetchOptions,
     headers,
   })
 
   // 401 自动跳转登录
-  if (response.status === 401) {
+  if (response.status === 401 && redirectOnUnauthorized) {
     removeToken()
     window.location.hash = '#/login'
     throw new Error('登录已过期')
@@ -102,10 +103,11 @@ export async function apiGet(path) {
   return res.json()
 }
 
-export async function apiPost(path, body) {
+export async function apiPost(path, body, options = {}) {
   const res = await api(path, {
     method: 'POST',
     body: JSON.stringify(body),
+    ...options,
   })
   if (!res.ok) {
     throw new Error(await getErrorMessage(res))

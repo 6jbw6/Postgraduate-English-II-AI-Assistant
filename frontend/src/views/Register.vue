@@ -66,10 +66,44 @@ const email = ref('')
 const password = ref('')
 const error = ref('')
 const loading = ref(false)
+const emailPattern = /^(?=.{5,128}$)(?!.*\.\.)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/
+const commonEmailDomains = new Set([
+  'qq.com',
+  'foxmail.com',
+  '163.com',
+  '126.com',
+  'yeah.net',
+  'sina.com',
+  'sina.cn',
+  'sohu.com',
+  '139.com',
+  '189.cn',
+  '21cn.com',
+  'aliyun.com',
+  'gmail.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'icloud.com',
+  'yahoo.com',
+  'proton.me',
+  'protonmail.com',
+])
+
+function isValidEmail(value) {
+  const normalized = value.trim().toLowerCase()
+  if (!emailPattern.test(normalized)) return false
+  const domain = normalized.split('@').pop()
+  return commonEmailDomains.has(domain)
+}
 
 async function handleRegister() {
   error.value = ''
   // 前端先给出即时提示；最终密码规则仍以后端校验为准。
+  if (!isValidEmail(email.value)) {
+    error.value = '邮箱格式不正确'
+    return
+  }
   if (password.value.length < 8) {
     error.value = '密码至少 8 位'
     return
